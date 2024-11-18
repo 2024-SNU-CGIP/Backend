@@ -1,14 +1,18 @@
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query as SQLAlchemyQuery
 from io import BytesIO
 from PIL import Image
 import torch
+import torch.nn as nn
 import torchvision.transforms as transforms
 from model import FusionModelMobileNetV2
 from dataset import DentalDataset
-from train import train
+from train import train, evaluate_model
 from torch.utils.data import DataLoader, Subset
 from sklearn.model_selection import train_test_split
+from database import SessionLocal, ImageMetadata, engine, get_db
 
 app = FastAPI()
 
@@ -32,10 +36,6 @@ xray_transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.5], std=[0.5])
 ])
-
-num_extraction_images = 110
-num_non_extraction_images = 110
-
 
 @app.post("/predict")
 async def predict(
@@ -67,7 +67,8 @@ async def upload_data(
     label: int,
     photo_L: UploadFile = File(...),
     photo_U: UploadFile = File(...),
-    xray: UploadFile = File(...)
+    xray: UploadFile = File(...),
+    db: Session = Depends(get_db)
 ):
     try:
         # Save the images
@@ -75,64 +76,109 @@ async def upload_data(
         photo_U_image = Image.open(BytesIO(await photo_U.read()))
         xray_image = Image.open(BytesIO(await xray.read()))
 
-        photo_L_image.save(f"images/TrainData/Extraction/Photo_L/{num_extraction_images + 1}_L.jpg" if label == 1 else f"images/TrainData/Non_Extraction/Photo_L/{num_non_extraction_images + 1}_L.jpg")
-        photo_U_image.save(f"images/TrainData/Extraction/Photo_U/{num_extraction_images + 1}_U.jpg" if label == 1 else f"images/TrainData/Non_Extraction/Photo_U/{num_non_extraction_images + 1}_U.jpg")
-        xray_image.save(f"images/TrainData/Extraction/Xray/{num_extraction_images + 1}_lat.jpg" if label == 1 else f"images/TrainData/Non_Extraction/Xray/{num_non_extraction_images + 1}_lat.jpg")
-        num_extraction_images += 1 if label == 1 else 0
-        num_non_extraction_images += 1 if label == 0 else 0
+        photo_L_path = f"images/TrainData/Extraction/Photo_L/{photo_L.filename}" if label == 1 else f"images/TrainData/Non_Extraction/Photo_L/{photo_L.filename}"
+        photo_U_path = f"images/TrainData/Extraction/Photo_U/{photo_U.filename}" if label == 1 else f"images/TrainData/Non_Extraction/Photo_U/{photo_U.filename}"
+        xray_path = f"images/TrainData/Extraction/Xray/{xray.filename}" if label == 1 else f"images/TrainData/Non_Extraction/Xray/{xray.filename}"
+
+        photo_L_image.save(photo_L_path)
+        photo_U_image.save(photo_U_path)
+        xray_image.save(xray_path)
+
+        # Save metadata to the database
+        db.add(ImageMetadata(filename=photo_L.filename, label=label, path=photo_L_path))
+        db.add(ImageMetadata(filename=photo_U.filename, label=label, path=photo_U_path))
+        db.add(ImageMetadata(filename=xray.filename, label=label, path=xray_path))
+        db.commit()
 
         return JSONResponse(content={"message": "Data uploaded successfully"})
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
-    
+
+# 상�� 정의
+TEST_SIZE = 0.1
+VAL_SIZE = 0.2
+RANDOM_STATE = 42
+
+def process_images(images, label, photo_paths_L, photo_paths_U, xray_paths):
+    labels = []
+    for image in images:
+        if "Photo_L" in image.path:
+            photo_paths_L.append(image.path)
+        elif "Photo_U" in image.path:
+            photo_paths_U.append(image.path)
+        elif "Xray" in image.path:
+            xray_paths.append(image.path)
+        labels.append(label)
+    return labels
+
 @app.get("/train")
-async def train():
+async def train_model(db: Session = Depends(get_db)):
     try:
         # Define paths and labels
         photo_paths_L = []
-        for i in range(1, num_extraction_images):
-            photo_paths_L.append(f"images/TrainData/Extraction/Photo_L/{i}_L.jpg")
-        for i in range(1, num_non_extraction_images):
-            photo_paths_L.append(f"images/TrainData/Non_Extraction/Photo_L/{i}_L.jpg")
         photo_paths_U = []
-        for i in range(1, num_extraction_images):
-            photo_paths_U.append(f"images/TrainData/Extraction/Photo_U/{i}_U.jpg")
-        for i in range(1, num_non_extraction_images):
-            photo_paths_U.append(f"images/TrainData/Non_Extraction/Photo_U/{i}_U.jpg")
-
         xray_paths = []
-        for i in range(1, num_extraction_images):
-            xray_paths.append(f"images/TrainData/Extraction/Xray/{i}_lat.jpg")
-        for i in range(1, num_non_extraction_images):
-            xray_paths.append(f"images/TrainData/Non_Extraction/Xray/{i}_lat.jpg")
+        labels = []
 
-        labels = [1] * num_extraction_images + [0] * num_non_extraction_images
+        extraction_images = db.query(ImageMetadata).filter(ImageMetadata.label == 1).all()
+        non_extraction_images = db.query(ImageMetadata).filter(ImageMetadata.label == 0).all()
 
-        # Create an instance of the dataset
-        dataset = DentalDataset(photo_paths_L, photo_paths_U, xray_paths, labels,
-                                photo_transform=photo_transform,
-                                xray_transform=xray_transform)
+        labels.extend(process_images(extraction_images, 1, photo_paths_L, photo_paths_U, xray_paths))
+        labels.extend(process_images(non_extraction_images, 0, photo_paths_L, photo_paths_U, xray_paths))
 
-        # Split the dataset into training, validation, and test sets
-        train_val_indices, test_indices = train_test_split(range(len(dataset)), test_size=0.1, shuffle=True, stratify=labels)
-        train_indices, val_indices = train_test_split(train_val_indices, test_size=0.2, shuffle=True, stratify=[labels[i] for i in train_val_indices])
+        # Split the data into train, validation, and test sets
+        train_indices, test_indices = train_test_split(range(len(labels)), test_size=TEST_SIZE, stratify=labels, random_state=RANDOM_STATE)
+        train_indices, val_indices = train_test_split(train_indices, test_size=VAL_SIZE, stratify=[labels[i] for i in train_indices], random_state=RANDOM_STATE)
 
-        train_subset = Subset(dataset, train_indices)
-        val_subset = Subset(dataset, val_indices)
-        test_subset = Subset(dataset, test_indices)
+        # Create dataset and dataloaders
+        dataset = DentalDataset(photo_paths_L, photo_paths_U, xray_paths, labels, photo_transform, xray_transform)
+        train_loader = DataLoader(Subset(dataset, train_indices), batch_size=32, shuffle=True)
+        val_loader = DataLoader(Subset(dataset, val_indices), batch_size=32, shuffle=False)
+        test_loader = DataLoader(Subset(dataset, test_indices), batch_size=32, shuffle=False)
 
-        # DataLoader for training, validation, and test
-        train_loader = DataLoader(train_subset, batch_size=16, shuffle=True)
-        val_loader = DataLoader(val_subset, batch_size=16, shuffle=False)
-        test_loader = DataLoader(test_subset, batch_size=16, shuffle=False)
-
+        # Define loss function and optimizer
+        criterion = lambda x, y: nn.BCELoss()(x, y) + 0.5 * nn.MSELoss()(x, y)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
         # Train the model
-        train(model, train_loader, val_loader, device)
-        return JSONResponse(content={"message": "Model trained successfully"})
-    
+        train(model, train_loader, val_loader, criterion, optimizer, device, num_epochs=50, patience=5)
+
+        # evaluate the model
+        test_accuracy = evaluate_model(model, test_loader, criterion, device)
+
+        return JSONResponse(content={"message": "Model trained successfully", "test_accuracy": test_accuracy})
     except Exception as e:
+        # 예외 발생 시 로그 추가
+        print(f"Error during model training: {e}")
         return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/images")
+async def get_images(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1), db: Session = Depends(get_db)):
+    try:
+        offset = (page - 1) * page_size
+        images_query: SQLAlchemyQuery = db.query(ImageMetadata).offset(offset).limit(page_size)
+        images = images_query.all()
+        total_images = db.query(ImageMetadata).count()
+        return {
+            "page": page,
+            "page_size": page_size,
+            "total_images": total_images,
+            "images": images
+        }
+    except Exception as e:
+        print(f"Error fetching images: {e}")
+        raise HTTPException(status_code=500, detail="Error fetching images")
+
+@app.get("/images/{image_id}")
+async def get_image(image_id: int, db: Session = Depends(get_db)):
+    try:
+        image = db.query(ImageMetadata).filter(ImageMetadata.id == image_id).first()
+        if image is None:
+            raise HTTPException(status_code=404, detail="Image not found")
+        return image
+    except Exception as e:
+        print(f"Error fetching image: {e}")
+        raise HTTPException(status_code=500, detail="Error fetching image")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000)

@@ -120,36 +120,14 @@ def train(model, train_loader, val_loader, criterion, optimizer, device, num_epo
 
     model.load_state_dict(torch.load('model_weights.pth'))
 
-def evaluate_model(model, data_loader, criterion, device):
+def evaluate_model(model, data_loader, device):
     model.eval()
-    total_loss = 0
-    all_preds = []
-    all_labels = []
+    test_accuracy = 0
 
     with torch.no_grad():
         for photos_L, photos_U, xrays, labels in data_loader:
             photos_L, photos_U, xrays, labels = photos_L.to(device), photos_U.to(device), xrays.to(device), labels.to(device)
             outputs = model(photos_L, photos_U, xrays).squeeze()
-            loss = criterion(outputs, labels)
-            total_loss += loss.item()
-
-    return total_loss / len(data_loader)
-
-# Training loop
-train(model, train_loader, val_loader, criterion, optimizer, device, num_epochs, patience)
-
-# Load the best model for testing
-model.load_state_dict(torch.load('model_weights.pth'))
-
-# Evaluate the model on the test set
-test_loss, test_preds, test_labels = evaluate_model(model, test_loader, criterion, device)
-
-# 결과 출력
-print(f'Test Loss: {test_loss:.4f}')
-print('\nClassification Report:')
-print(classification_report(test_labels, test_preds))
-
-# 혼동 행렬 시각화
-cm = confusion_matrix(test_labels, test_preds)
-
-print('Model training and evaluation completed.')
+            test_accuracy += ((outputs > 0.5) == labels).sum().item()
+    
+    return test_accuracy / len(data_loader.dataset)
