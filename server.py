@@ -1,19 +1,19 @@
-from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
-from sqlalchemy.orm import Query as SQLAlchemyQuery
-from io import BytesIO
 from PIL import Image
-import torch
-import torch.nn as nn
+from io import BytesIO
 from pathlib import Path
-import torchvision.transforms as transforms
-from model import FusionModelMobileNetV2
-from dataset import DentalDataset
-from train import train, evaluate_model
-from torch.utils.data import DataLoader, Subset
 from sklearn.model_selection import train_test_split
-from database import SessionLocal, ImageMetadata, engine, get_db
+from torch.utils.data import DataLoader, Subset
+from torchvision import transforms
+import torch.nn as nn
+import torch.optim
+from database import get_db, ImageMetadata, Patient
+from dataset import DentalDataset  
+from model import FusionModelMobileNetV2
+from train import train, evaluate_model
+import base64
 
 app = FastAPI()
 
@@ -78,7 +78,7 @@ async def upload_data(
         xray_image = Image.open(BytesIO(await xray.read()))
 
         photo_L_path = f"images/TrainData/Extraction/Photo_L/{photo_L.filename}" if label == 1 else f"images/TrainData/Non_Extraction/Photo_L/{photo_L.filename}"
-        photo_U_path = f"images/TrainData/Extraction/Photo_U/{photo_U.filename}" if label == 1 else f"images/TrainData/Non_Extraction/Photo_U/{photo_U.filename}"
+        photo_U_path = f"images/TrainData/Extraction/photo_U/{photo_U.filename}" if label == 1 else f"images/TrainData/Non_Extraction/photo_U/{photo_U.filename}"
         xray_path = f"images/TrainData/Extraction/Xray/{xray.filename}" if label == 1 else f"images/TrainData/Non_Extraction/Xray/{xray.filename}"
 
         photo_L_image.save(photo_L_path)
@@ -86,29 +86,37 @@ async def upload_data(
         xray_image.save(xray_path)
 
         # Save metadata to the database
-        db.add(ImageMetadata(filename=photo_L.filename, label=label, path=photo_L_path))
-        db.add(ImageMetadata(filename=photo_U.filename, label=label, path=photo_U_path))
-        db.add(ImageMetadata(filename=xray.filename, label=label, path=xray_path))
+        patient = Patient()
+        db.add(patient)
+        db.commit()
+        db.refresh(patient)
+
+        db.add(ImageMetadata(
+            patient_id=patient.id,
+            photo_L_path=photo_L_path,
+            photo_U_path=photo_U_path,
+            xray_path=xray_path
+        ))
         db.commit()
 
         return JSONResponse(content={"message": "Data uploaded successfully"})
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
-# 상�� 정의
+# 상수 정의
 TEST_SIZE = 0.1
 VAL_SIZE = 0.2
 RANDOM_STATE = 42
 
-def process_images(images, label, photo_paths_L, photo_paths_U, xray_paths):
+def process_images(images, label, photo_paths_L, photo_paths_R, xray_paths):
     labels = []
     for image in images:
-        if "Photo_L" in image.path:
-            photo_paths_L.append(image.path)
-        elif "Photo_U" in image.path:
-            photo_paths_U.append(image.path)
-        elif "Xray" in image.path:
-            xray_paths.append(image.path)
+        if image.photo_L_path:
+            photo_paths_L.append(image.photo_L_path)
+        if image.photo_U_path:
+            photo_paths_R.append(image.photo_U_path)
+        if image.xray_path:
+            xray_paths.append(image.xray_path)
         labels.append(label)
     return labels
 
@@ -117,22 +125,22 @@ async def train_model(db: Session = Depends(get_db)):
     try:
         # Define paths and labels
         photo_paths_L = []
-        photo_paths_U = []
+        photo_paths_R = []
         xray_paths = []
         labels = []
 
         extraction_images = db.query(ImageMetadata).filter(ImageMetadata.label == 1).all()
         non_extraction_images = db.query(ImageMetadata).filter(ImageMetadata.label == 0).all()
 
-        labels.extend(process_images(extraction_images, 1, photo_paths_L, photo_paths_U, xray_paths))
-        labels.extend(process_images(non_extraction_images, 0, photo_paths_L, photo_paths_U, xray_paths))
+        labels.extend(process_images(extraction_images, 1, photo_paths_L, photo_paths_R, xray_paths))
+        labels.extend(process_images(non_extraction_images, 0, photo_paths_L, photo_paths_R, xray_paths))
 
         # Split the data into train, validation, and test sets
         train_indices, test_indices = train_test_split(range(len(labels)), test_size=TEST_SIZE, stratify=labels, random_state=RANDOM_STATE)
         train_indices, val_indices = train_test_split(train_indices, test_size=VAL_SIZE, stratify=[labels[i] for i in train_indices], random_state=RANDOM_STATE)
 
         # Create dataset and dataloaders
-        dataset = DentalDataset(photo_paths_L, photo_paths_U, xray_paths, labels, photo_transform, xray_transform)
+        dataset = DentalDataset(photo_paths_L, photo_paths_R, xray_paths, labels, photo_transform, xray_transform)
         train_loader = DataLoader(Subset(dataset, train_indices), batch_size=32, shuffle=True)
         val_loader = DataLoader(Subset(dataset, val_indices), batch_size=32, shuffle=False)
         test_loader = DataLoader(Subset(dataset, test_indices), batch_size=32, shuffle=False)
@@ -156,29 +164,64 @@ async def train_model(db: Session = Depends(get_db)):
 async def get_images(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1), db: Session = Depends(get_db)):
     try:
         offset = (page - 1) * page_size
-        images_query: SQLAlchemyQuery = db.query(ImageMetadata).offset(offset).limit(page_size)
-        images = images_query.all()
-        total_images = db.query(ImageMetadata).count()
+        patients_query = db.query(Patient).offset(offset).limit(page_size)
+        patients = patients_query.all()
+        total_patients = db.query(Patient).count()
+        
+        result = []
+        for patient in patients:
+            images = db.query(ImageMetadata).filter(ImageMetadata.patient_id == patient.id).all()
+            result.append({
+                "patient_id": patient.id,
+                "images": [
+                    {
+                        "id": image.id,
+                        "photo_L_path": image.photo_L_path,
+                        "photo_U_path": image.photo_U_path,
+                        "xray_path": image.xray_path
+                    } for image in images
+                ]
+            })
+        
         return {
             "page": page,
             "page_size": page_size,
-            "total_images": total_images,
-            "images": images
+            "total_patients": total_patients,
+            "patients": result
         }
     except Exception as e:
         print(f"Error fetching images: {e}")
         raise HTTPException(status_code=500, detail="Error fetching images")
 
-@app.get("/images/{image_id}")
-async def get_image(image_id: int, db: Session = Depends(get_db)):
+@app.get("/images/{patient_id}")
+async def get_image(patient_id: int, db: Session = Depends(get_db)):
     try:
-        image = db.query(ImageMetadata).filter(ImageMetadata.id == image_id).first()
-        if image is None:
-            raise HTTPException(status_code=404, detail="Image not found")
-        return image
+        patient = db.get(Patient, patient_id)
+        if patient is None:
+            raise HTTPException(status_code=404, detail="Patient not found")
+        
+        images = db.query(ImageMetadata).filter(ImageMetadata.patient_id == patient_id).all()
+        image_data = []
+        for image in images:
+            image_info = {"id": image.id}
+            if image.photo_L_path:
+                with open(image.photo_L_path, "rb") as photo_L_file:
+                    image_info["photo_L"] = base64.b64encode(photo_L_file.read()).decode('utf-8')
+            if image.photo_U_path:
+                with open(image.photo_U_path, "rb") as photo_U_file:
+                    image_info["photo_U"] = base64.b64encode(photo_U_file.read()).decode('utf-8')
+            if image.xray_path:
+                with open(image.xray_path, "rb") as xray_file:
+                    image_info["xray"] = base64.b64encode(xray_file.read()).decode('utf-8')
+            image_data.append(image_info)
+        
+        return JSONResponse(content={
+            "patient_id": patient.id,
+            "images": image_data
+        })
     except Exception as e:
-        print(f"Error fetching image: {e}")
-        raise HTTPException(status_code=500, detail="Error fetching image")
+        print(f"Error fetching images: {e}")
+        raise HTTPException(status_code=500, detail="Error fetching images")
 
 if __name__ == "__main__":
     import uvicorn
