@@ -19,6 +19,7 @@ class ImageMetadata(Base):
     __tablename__ = "image_metadata"
 
     id = Column(Integer, primary_key=True, index=True)
+    label = Column(Integer, index=True)
     patient_id = Column(Integer, ForeignKey('patients.id'))
     photo_L_path = Column(String, index=True)
     photo_U_path = Column(String, index=True)
@@ -56,6 +57,7 @@ def db_init():
             
             db.add(ImageMetadata(
                 patient_id=patient.id,
+                label=label,
                 photo_L_path=str(photo_L_path) if photo_L_path else None,
                 photo_U_path=str(photo_U_path) if photo_U_path else None,
                 xray_path=str(xray_path) if xray_path else None
