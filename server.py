@@ -14,8 +14,19 @@ from dataset import DentalDataset
 from model import FusionModelMobileNetV2
 from train import train, evaluate_model
 import base64
+from datetime import datetime
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+
+# CORS 설정 추가
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 모든 도메인 허용, 특정 도메인만 허용하려면 ["http://example.com"]과 같이 설정
+    allow_credentials=True,
+    allow_methods=["*"],  # 모든 HTTP 메서드 허용
+    allow_headers=["*"],  # 모든 HTTP 헤더 허용
+)
 
 # Load the model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -148,13 +159,21 @@ async def train_model(db: Session = Depends(get_db)):
         # Define loss function and optimizer
         criterion = lambda x, y: nn.BCELoss()(x, y) + 0.5 * nn.MSELoss()(x, y)
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+
+        # 학습 시작 시간 기록
+        start_time = datetime.now()
+
         # Train the model
         train(model, train_loader, val_loader, criterion, optimizer, device, num_epochs=50, patience=5)
+
+        # 학습 종료 시간 기록
+        end_time = datetime.now()
+        training_time = (end_time - start_time).total_seconds()
 
         # evaluate the model
         test_accuracy = evaluate_model(model, test_loader, criterion, device)
 
-        return JSONResponse(content={"message": "Model trained successfully", "test_accuracy": test_accuracy})
+        return JSONResponse(content={"message": "Model trained successfully", "test_accuracy": test_accuracy, "training_time": training_time})
     except Exception as e:
         # 예외 발생 시 로그 추가
         print(f"Error during model training: {e}")
@@ -222,6 +241,15 @@ async def get_image(patient_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         print(f"Error fetching images: {e}")
         raise HTTPException(status_code=500, detail="Error fetching images")
+
+@app.get("/total_patients")
+async def get_total_patients(db: Session = Depends(get_db)):
+    try:
+        total_patients = db.query(Patient).count()
+        return JSONResponse(content={"total_patients": total_patients})
+    except Exception as e:
+        print(f"Error fetching total patients: {e}")
+        raise HTTPException(status_code=500, detail="Error fetching total patients")
 
 if __name__ == "__main__":
     import uvicorn
