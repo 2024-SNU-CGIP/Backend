@@ -97,7 +97,7 @@ async def upload_data(
         xray_image.save(xray_path)
 
         # Save metadata to the database
-        patient = Patient()
+        patient = Patient(label=label, timestamp=str(datetime.now().timestamp()))
         db.add(patient)
         db.commit()
         db.refresh(patient)
@@ -144,11 +144,10 @@ def train_model_task(db: Session, task_id: str):
         xray_paths = []
         labels = []
 
-        extraction_images = db.query(ImageMetadata).filter(ImageMetadata.label == 1).all()
-        non_extraction_images = db.query(ImageMetadata).filter(ImageMetadata.label == 0).all()
-
-        labels.extend(process_images(extraction_images, 1, photo_paths_L, photo_paths_R, xray_paths))
-        labels.extend(process_images(non_extraction_images, 0, photo_paths_L, photo_paths_R, xray_paths))
+        patients = db.query(Patient).all()
+        for patient in patients:
+            images = db.query(ImageMetadata).filter(ImageMetadata.patient_id == patient.id).all()
+            labels.extend(process_images(images, patient.label, photo_paths_L, photo_paths_R, xray_paths))
 
         # Split the data into train, validation, and test sets
         train_indices, test_indices = train_test_split(range(len(labels)), test_size=TEST_SIZE, stratify=labels, random_state=RANDOM_STATE)
@@ -186,11 +185,9 @@ def train_model_task(db: Session, task_id: str):
 @app.get("/train")
 async def train_model(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     task_id = str(datetime.now().timestamp())
-    extraction_images_count = db.query(ImageMetadata).filter(ImageMetadata.label == 1).count()
-    non_extraction_images_count = db.query(ImageMetadata).filter(ImageMetadata.label == 0).count()
-    total_images_count = extraction_images_count + non_extraction_images_count
+    total_patients_count = db.query(Patient).count()
     background_tasks.add_task(train_model_task, db, task_id)
-    return JSONResponse(content={"message": "Training started", "task_id": task_id, "total_images_count": total_images_count})
+    return JSONResponse(content={"message": "Training started", "task_id": task_id, "total_patients_count": total_patients_count})
 
 @app.get("/train_result/{task_id}")
 async def get_train_result(task_id: str):
@@ -215,17 +212,17 @@ async def get_images(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1
         
         result = []
         for patient in patients:
-            images = db.query(ImageMetadata).filter(ImageMetadata.patient_id == patient.id).all()
+            image = db.query(ImageMetadata).filter(ImageMetadata.patient_id == patient.id).first()
             result.append({
                 "patient_id": patient.id,
-                "images": [
-                    {
-                        "id": image.id,
-                        "photo_L_path": image.photo_L_path,
-                        "photo_U_path": image.photo_U_path,
-                        "xray_path": image.xray_path
-                    } for image in images
-                ]
+                "label": patient.label,  # Include label
+                "timestamp": datetime.fromtimestamp(float(patient.timestamp)).strftime('%Y:%m:%d %H:%M:%S'),  # Include timestamp
+                "images": {
+                    "id": image.id,
+                    "photo_L_path": image.photo_L_path,
+                    "photo_U_path": image.photo_U_path,
+                    "xray_path": image.xray_path,
+                }
             })
         
         return {
@@ -262,6 +259,8 @@ async def get_image(patient_id: int, db: Session = Depends(get_db)):
         
         return JSONResponse(content={
             "patient_id": patient.id,
+            "label": patient.label,  # Include label
+            "timestamp": datetime.fromtimestamp(float(patient.timestamp)).strftime('%Y:%m:%d %H:%M:%S'),  # Include timestamp
             "images": image_data
         })
     except Exception as e:

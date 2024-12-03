@@ -1,3 +1,4 @@
+from datetime import datetime
 from sqlalchemy import create_engine, Column, Integer, String, ForeignKey
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.ext.declarative import declarative_base
@@ -14,12 +15,13 @@ class Patient(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     images = relationship("ImageMetadata", back_populates="patient")
+    label = Column(Integer, index=True)
+    timestamp = Column(String, index=True)
 
 class ImageMetadata(Base):
     __tablename__ = "image_metadata"
 
     id = Column(Integer, primary_key=True, index=True)
-    label = Column(Integer, index=True)
     patient_id = Column(Integer, ForeignKey('patients.id'))
     photo_L_path = Column(String, index=True)
     photo_U_path = Column(String, index=True)
@@ -50,14 +52,13 @@ def db_init():
         
         for photo_L_path, photo_U_path, xray_path in zip(photo_L_paths, photo_U_paths, xray_paths):
             db = SessionLocal()
-            patient = Patient()
+            patient = Patient(label=label, timestamp=str(datetime.now().timestamp()))
             db.add(patient)
             db.commit()
             db.refresh(patient)
             
             db.add(ImageMetadata(
                 patient_id=patient.id,
-                label=label,
                 photo_L_path=str(photo_L_path) if photo_L_path else None,
                 photo_U_path=str(photo_U_path) if photo_U_path else None,
                 xray_path=str(xray_path) if xray_path else None
