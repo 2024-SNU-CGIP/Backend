@@ -132,9 +132,12 @@ def process_images(images, label, photo_paths_L, photo_paths_R, xray_paths):
     return labels
 
 training_results = {}
+training_status = {}
 
 def train_model_task(db: Session, task_id: str):
     try:
+        training_status[task_id] = "in_progress"
+        training_results[task_id] = {"message": "processing"}
         # Define paths and labels
         photo_paths_L = []
         photo_paths_R = []
@@ -175,7 +178,9 @@ def train_model_task(db: Session, task_id: str):
         test_accuracy = evaluate_model(model, test_loader, criterion, device)
 
         training_results[task_id] = {"message": "Model trained successfully", "test_accuracy": test_accuracy, "training_time": training_time}
+        training_status[task_id] = "completed"
     except Exception as e:
+        training_status[task_id] = "failed"
         training_results[task_id] = {"error": str(e)}
 
 @app.get("/train")
@@ -191,6 +196,11 @@ async def get_train_result(task_id: str):
         return JSONResponse(content=result)
     else:
         raise HTTPException(status_code=404, detail="Task not found")
+
+@app.get("/train_results")
+async def get_all_train_results():
+    results = {task_id: {"status": status, **training_results.get(task_id, {})} for task_id, status in training_status.items()}
+    return JSONResponse(content=results)
 
 @app.get("/images")
 async def get_images(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1), db: Session = Depends(get_db)):
