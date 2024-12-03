@@ -268,14 +268,27 @@ async def get_image(patient_id: int, db: Session = Depends(get_db)):
         print(f"Error fetching images: {e}")
         raise HTTPException(status_code=500, detail="Error fetching images")
 
-@app.get("/total_patients")
-async def get_total_patients(db: Session = Depends(get_db)):
+@app.get("/stats")
+async def get_stats(db: Session = Depends(get_db)):
     try:
-        total_patients = db.query(Patient).count()
-        return JSONResponse(content={"total_patients": total_patients})
+        # 최근 데이터 개수
+        recent_data_count = db.query(ImageMetadata).count()
+
+        # 최근 학습 날짜
+        recent_train_date = max(training_results.keys(), default=None)
+        if recent_train_date:
+            recent_train_date = datetime.fromtimestamp(float(recent_train_date)).strftime('%Y:%m:%d %H:%M:%S')
+
+        # 가장 높은 정확도
+        highest_accuracy = max((result.get("test_accuracy", 0) for result in training_results.values()), default=0)
+
+        return JSONResponse(content={
+            "recent_data_count": recent_data_count,
+            "recent_train_date": recent_train_date,
+            "highest_accuracy": highest_accuracy
+        })
     except Exception as e:
-        print(f"Error fetching total patients: {e}")
-        raise HTTPException(status_code=500, detail="Error fetching total patients")
+        return JSONResponse(content={"error": str(e)}, status_code=500)
 
 if __name__ == "__main__":
     import uvicorn
