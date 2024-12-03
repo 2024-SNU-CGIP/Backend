@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Query, BackgroundTasks
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from PIL import Image
@@ -131,8 +131,9 @@ def process_images(images, label, photo_paths_L, photo_paths_R, xray_paths):
         labels.append(label)
     return labels
 
-@app.get("/train")
-async def train_model(db: Session = Depends(get_db)):
+training_results = {}
+
+def train_model_task(db: Session, task_id: str):
     try:
         # Define paths and labels
         photo_paths_L = []
@@ -173,11 +174,23 @@ async def train_model(db: Session = Depends(get_db)):
         # evaluate the model
         test_accuracy = evaluate_model(model, test_loader, criterion, device)
 
-        return JSONResponse(content={"message": "Model trained successfully", "test_accuracy": test_accuracy, "training_time": training_time})
+        training_results[task_id] = {"message": "Model trained successfully", "test_accuracy": test_accuracy, "training_time": training_time}
     except Exception as e:
-        # 예외 발생 시 로그 추가
-        print(f"Error during model training: {e}")
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        training_results[task_id] = {"error": str(e)}
+
+@app.get("/train")
+async def train_model(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    task_id = str(datetime.now().timestamp())
+    background_tasks.add_task(train_model_task, db, task_id)
+    return JSONResponse(content={"message": "Training started", "task_id": task_id})
+
+@app.get("/train_result/{task_id}")
+async def get_train_result(task_id: str):
+    result = training_results.get(task_id)
+    if result:
+        return JSONResponse(content=result)
+    else:
+        raise HTTPException(status_code=404, detail="Task not found")
 
 @app.get("/images")
 async def get_images(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1), db: Session = Depends(get_db)):
