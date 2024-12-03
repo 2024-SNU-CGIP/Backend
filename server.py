@@ -186,8 +186,11 @@ def train_model_task(db: Session, task_id: str):
 @app.get("/train")
 async def train_model(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     task_id = str(datetime.now().timestamp())
+    extraction_images_count = db.query(ImageMetadata).filter(ImageMetadata.label == 1).count()
+    non_extraction_images_count = db.query(ImageMetadata).filter(ImageMetadata.label == 0).count()
+    total_images_count = extraction_images_count + non_extraction_images_count
     background_tasks.add_task(train_model_task, db, task_id)
-    return JSONResponse(content={"message": "Training started", "task_id": task_id})
+    return JSONResponse(content={"message": "Training started", "task_id": task_id, "total_images_count": total_images_count})
 
 @app.get("/train_result/{task_id}")
 async def get_train_result(task_id: str):
