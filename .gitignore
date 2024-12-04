@@ -159,6 +159,7 @@ cython_debug/
 #image Directory
 images/
 test.db
+predict_images/
 
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

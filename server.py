@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Query, BackgroundTasks, Form
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from PIL import Image
@@ -9,13 +9,15 @@ from torch.utils.data import DataLoader, Subset
 from torchvision import transforms
 import torch.nn as nn
 import torch.optim
-from database import get_db, ImageMetadata, Patient
+from database import get_db, ImageMetadata, Patient, Predict, Train
 from dataset import DentalDataset  
 from model import FusionModelMobileNetV2
 from train import train, evaluate_model
 import base64
 from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
+from uuid import uuid4
+import os
 
 app = FastAPI()
 
@@ -49,17 +51,18 @@ xray_transform = transforms.Compose([
     transforms.Normalize(mean=[0.5], std=[0.5])
 ])
 
-@app.post("/predict")
-async def predict(
-    photo_L: UploadFile = File(...),
-    photo_U: UploadFile = File(...),
-    xray: UploadFile = File(...),
-):
+predict_results = {}
+predict_status = {}
+
+def predict_task(photo_L_path, photo_U_path, xray_path, task_id, db: Session):
     try:
-        # Read and preprocess the images
-        photo_L_image = Image.open(BytesIO(await photo_L.read()))
-        photo_U_image = Image.open(BytesIO(await photo_U.read()))
-        xray_image = Image.open(BytesIO(await xray.read()))
+        db.query(Predict).filter(Predict.id == task_id).update({"status": "in_progress"})
+        db.commit()
+
+        # Load and preprocess the images
+        photo_L_image = Image.open(photo_L_path).convert('RGB')
+        photo_U_image = Image.open(photo_U_path).convert('RGB')
+        xray_image = Image.open(xray_path).convert('L')
 
         photo_L_tensor = photo_transform(photo_L_image).unsqueeze(0).to(device)
         photo_U_tensor = photo_transform(photo_U_image).unsqueeze(0).to(device)
@@ -69,11 +72,85 @@ async def predict(
         with torch.no_grad():
             prediction = model(photo_L_tensor, photo_U_tensor, xray_tensor)
 
-        # Return the result
-        return JSONResponse(content={"prediction": prediction.item()})
+        db.query(Predict).filter(Predict.id == task_id).update({"status": "completed", "result": int(prediction.item())})
+        db.commit()
+    except Exception as e:
+        print(f"Prediction failed: {e}")
+        db.query(Predict).filter(Predict.id == task_id).update({"status": "failed", "result": None})
+        db.commit()
+
+@app.post("/predict")
+async def predict(
+    background_tasks: BackgroundTasks,
+    name: str = Form(...),  # 변경: Query -> Form
+    birthdate: str = Form(...),  # 변경: Query -> Form
+    photo_L: UploadFile = File(...),
+    photo_U: UploadFile = File(...),
+    xray: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    try:
+        # Ensure the directory exists
+        os.makedirs("predict_images", exist_ok=True)
+
+        # Save the images temporarily
+        photo_L_path = f"predict_images/{uuid4()}.jpg"
+        photo_U_path = f"predict_images/{uuid4()}.jpg"
+        xray_path = f"predict_images/{uuid4()}.jpg"
+
+        with open(photo_L_path, "wb") as f:
+            f.write(await photo_L.read())
+        with open(photo_U_path, "wb") as f:
+            f.write(await photo_U.read())
+        with open(xray_path, "wb") as f:
+            f.write(await xray.read())
+
+        task_id = str(uuid4())
+        db.add(Predict(id=task_id, status="queued", timestamp=str(datetime.now().timestamp()), name=name, birthdate=birthdate, result=None))
+        db.commit()
+        background_tasks.add_task(predict_task, photo_L_path, photo_U_path, xray_path, task_id, db)
+        return JSONResponse(content={"message": "Prediction started", "task_id": task_id})
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
-    
+
+@app.get("/predict_result/{task_id}")
+async def get_predict_result(task_id: str, db: Session = Depends(get_db)):
+    result = db.query(Predict).filter(Predict.id == task_id).first()
+    if result:
+        image_data = {}
+        image_metadata = db.query(ImageMetadata).filter(ImageMetadata.patient_id == result.id).first()
+        if image_metadata:
+            if image_metadata.photo_L_path:
+                with open(image_metadata.photo_L_path, "rb") as photo_L_file:
+                    image_data["photo_L"] = base64.b64encode(photo_L_file.read()).decode('utf-8')
+            if image_metadata.photo_U_path:
+                with open(image_metadata.photo_U_path, "rb") as photo_U_file:
+                    image_data["photo_U"] = base64.b64encode(photo_U_file.read()).decode('utf-8')
+            if image_metadata.xray_path:
+                with open(image_metadata.xray_path, "rb") as xray_file:
+                    image_data["xray"] = base64.b64encode(xray_file.read()).decode('utf-8')
+        return JSONResponse(content={"status": result.status, "result": result.result, "images": image_data})
+    else:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+@app.get("/predict_results")
+async def get_all_predict_results(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1), db: Session = Depends(get_db)):
+    try:
+        offset = (page - 1) * page_size
+        tasks = db.query(Predict).offset(offset).limit(page_size).all()
+        total_tasks = db.query(Predict).count()
+        max_page = (total_tasks + page_size - 1) // page_size
+        results = {task.id: {"status": task.status, "result": task.result} for task in tasks}
+        return {
+            "page": page,
+            "page_size": page_size,
+            "total_tasks": total_tasks,
+            "max_page": max_page,
+            "results": results
+        }
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
 @app.post("/upload_data")
 async def upload_data(
     label: int,
@@ -131,13 +208,11 @@ def process_images(images, label, photo_paths_L, photo_paths_R, xray_paths):
         labels.append(label)
     return labels
 
-training_results = {}
-training_status = {}
-
 def train_model_task(db: Session, task_id: str):
     try:
-        training_status[task_id] = "in_progress"
-        training_results[task_id] = {"message": "processing"}
+        db.query(Train).filter(Train.id == task_id).update({"status": "in_progress"})
+        db.commit()
+
         # Define paths and labels
         photo_paths_L = []
         photo_paths_R = []
@@ -176,31 +251,45 @@ def train_model_task(db: Session, task_id: str):
         # evaluate the model
         test_accuracy = evaluate_model(model, test_loader, criterion, device)
 
-        training_results[task_id] = {"message": "Model trained successfully", "test_accuracy": test_accuracy, "training_time": training_time}
-        training_status[task_id] = "completed"
+        db.query(Train).filter(Train.id == task_id).update({"status": "completed", "result": str({"test_accuracy": test_accuracy, "training_time": training_time})})
+        db.commit()
     except Exception as e:
-        training_status[task_id] = "failed"
-        training_results[task_id] = {"error": str(e)}
+        db.query(Train).filter(Train.id == task_id).update({"status": "failed", "result": str(e)})
+        db.commit()
 
 @app.get("/train")
 async def train_model(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    task_id = str(datetime.now().timestamp())
-    total_patients_count = db.query(Patient).count()
+    task_id = str(uuid4())  # 변경: task_id를 str로 변경
+    db.add(Train(id=task_id, status="queued", timestamp=str(datetime.now().timestamp()), result=None))
+    db.commit()
     background_tasks.add_task(train_model_task, db, task_id)
-    return JSONResponse(content={"message": "Training started", "task_id": task_id, "total_patients_count": total_patients_count})
+    return JSONResponse(content={"message": "Training started", "task_id": task_id})
 
 @app.get("/train_result/{task_id}")
-async def get_train_result(task_id: str):
-    result = training_results.get(task_id)
+async def get_train_result(task_id: str, db: Session = Depends(get_db)):
+    result = db.query(Train).filter(Train.id == task_id).first()
     if result:
-        return JSONResponse(content=result)
+        return JSONResponse(content={"status": result.status, "result": result.result})
     else:
         raise HTTPException(status_code=404, detail="Task not found")
 
 @app.get("/train_results")
-async def get_all_train_results():
-    results = {task_id: {"status": status, **training_results.get(task_id, {})} for task_id, status in training_status.items()}
-    return JSONResponse(content=results)
+async def get_all_train_results(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1), db: Session = Depends(get_db)):
+    try:
+        offset = (page - 1) * page_size
+        tasks = db.query(Train).offset(offset).limit(page_size).all()
+        total_tasks = db.query(Train).count()
+        max_page = (total_tasks + page_size - 1) // page_size
+        results = {task.id: {"status": task.status, "result": task.result} for task in tasks}
+        return {
+            "page": page,
+            "page_size": page_size,
+            "total_tasks": total_tasks,
+            "max_page": max_page,
+            "results": results
+        }
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
 
 @app.get("/images")
 async def get_images(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1), db: Session = Depends(get_db)):
@@ -209,6 +298,7 @@ async def get_images(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1
         patients_query = db.query(Patient).offset(offset).limit(page_size)
         patients = patients_query.all()
         total_patients = db.query(Patient).count()
+        max_page = (total_patients + page_size - 1) // page_size
         
         result = []
         for patient in patients:
@@ -229,6 +319,7 @@ async def get_images(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1
             "page": page,
             "page_size": page_size,
             "total_patients": total_patients,
+            "max_page": max_page,
             "patients": result
         }
     except Exception as e:
@@ -274,12 +365,11 @@ async def get_stats(db: Session = Depends(get_db)):
         recent_data_count = db.query(ImageMetadata).count()
 
         # 최근 학습 날짜
-        recent_train_date = max(training_results.keys(), default=None)
-        if recent_train_date:
-            recent_train_date = datetime.fromtimestamp(float(recent_train_date)).strftime('%Y:%m:%d %H:%M:%S')
+        recent_train = db.query(Train).order_by(Train.timestamp.desc()).first()
+        recent_train_date = datetime.fromtimestamp(float(recent_train.timestamp)).strftime('%Y:%m:%d %H:%M:%S') if recent_train else None
 
         # 가장 높은 정확도
-        highest_accuracy = max((result.get("test_accuracy", 0) for result in training_results.values()), default=0)
+        highest_accuracy = max((float(result.result.get("test_accuracy", 0)) for result in db.query(Train).all()), default=0)
 
         return JSONResponse(content={
             "recent_data_count": recent_data_count,

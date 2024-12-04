@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Text
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.ext.declarative import declarative_base
 from pathlib import Path
@@ -28,6 +28,35 @@ class ImageMetadata(Base):
     xray_path = Column(String, index=True)
     patient = relationship("Patient", back_populates="images")
 
+class Predict(Base):
+    __tablename__ = "predict"
+
+    id = Column(String, primary_key=True, index=True)  # 변경: Integer -> String
+    status = Column(String, index=True)
+    result = Column(Integer, nullable=True)
+    timestamp = Column(String, index=True)
+    name = Column(String, index=True)
+    birthdate = Column(String, index=True)
+    images = relationship("PredictImageMetadata", back_populates="predict")
+
+class Train(Base):
+    __tablename__ = "train"
+
+    id = Column(String, primary_key=True, index=True)  # 변경: Integer -> String
+    status = Column(String, index=True)
+    result = Column(Text, nullable=True)
+    timestamp = Column(String, index=True)
+
+class PredictImageMetadata(Base):
+    __tablename__ = "predict_image_metadata"
+
+    id = Column(Integer, primary_key=True, index=True)
+    predict_id = Column(Integer, ForeignKey('predict.id'))
+    photo_L_path = Column(String, index=True)
+    photo_U_path = Column(String, index=True)
+    xray_path = Column(String, index=True)
+    predict = relationship("Predict", back_populates="images")
+
 Base.metadata.create_all(bind=engine)
 
 # Dependency
@@ -42,6 +71,8 @@ def db_init():
     db = SessionLocal()
     db.query(ImageMetadata).delete()
     db.query(Patient).delete()
+    db.query(PredictImageMetadata).delete()
+    db.query(Predict).delete()
     db.commit()
     db.close()
 
