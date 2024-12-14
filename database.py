@@ -33,7 +33,7 @@ class Predict(Base):
 
     id = Column(String, primary_key=True, index=True)  # 변경: Integer -> String
     status = Column(String, index=True)
-    result = Column(Integer, nullable=True)
+    result = Column(String, nullable=True)
     timestamp = Column(String, index=True)
     name = Column(String, index=True)
     birthdate = Column(String, index=True)

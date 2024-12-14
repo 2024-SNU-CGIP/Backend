@@ -2,7 +2,129 @@ import cv2
 import numpy as np
 from numpy.linalg import inv
 from scipy.spatial.distance import cdist
+import torch
+from torch import nn
+from torchvision import models
+import torch.nn.functional as F
+from PIL import Image
 
+
+class GuidedBackpropReLU(nn.Module):
+    def forward(self, x):
+        # Perform ReLU on forward pass
+        return F.relu(x)
+
+    def backward(self, grad_output):
+        # Pass positive gradients only during backpropagation
+        grad_input = grad_output.clone()
+        grad_input[grad_output < 0] = 0
+        return grad_input
+
+class FusionModelMobileNetV2_XAI(nn.Module):
+    def __init__(self, num_classes=1):
+        super(FusionModelMobileNetV2_XAI, self).__init__()
+
+        # MobileNetV2 for photo_L
+        self.mobilenet_L = models.mobilenet_v2(pretrained=True)
+        self.mobilenet_L.classifier = nn.Identity()  # Remove the final classifier
+
+        # MobileNetV2 for photo_U
+        self.mobilenet_U = models.mobilenet_v2(pretrained=True)
+        self.mobilenet_U.classifier = nn.Identity()  # Remove the final classifier
+
+        # MobileNetV2 for X-ray (modify first conv layer for grayscale input)
+        self.mobilenet_xray = models.mobilenet_v2(pretrained=True)
+        self.mobilenet_xray.features[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1, bias=False)
+        self.mobilenet_xray.classifier = nn.Identity()  # Remove the final classifier
+
+        # Fusion layers
+        self.fusion = nn.Sequential(
+            nn.Linear(1280 * 3, 1024),  # MobileNetV2 outputs 1280 features
+            GuidedBackpropReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(1024, 256),
+            GuidedBackpropReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(256, 64),
+            GuidedBackpropReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, num_classes),
+            nn.Sigmoid()
+        )
+
+    def forward(self, photo_L, photo_U, xray):
+        # Extract features from each input
+        features_L = self.mobilenet_L(photo_L)
+        features_U = self.mobilenet_U(photo_U)
+        features_xray = self.mobilenet_xray(xray)
+
+        # Concatenate features
+        combined_features = torch.cat((features_L, features_U, features_xray), dim=1)
+
+        # Pass through fusion layers
+        output = self.fusion(combined_features)
+
+        return output
+
+# Guided Backpropagation implementation
+def guided_backpropagation(model, photo_L, photo_U, xray, target_index=None):
+    # Set model in evaluation mode and ensure all ReLU layers are Guided Backprop ReLUs
+    model.eval()
+
+    for module in model.modules():
+        if isinstance(module, nn.ReLU):
+            module = GuidedBackpropReLU()
+
+    # Forward pass
+    output = model(photo_L, photo_U, xray)
+
+    # If no target index specified, use the highest scoring class
+    if target_index is None:
+        target_index = output.argmax()
+
+    # Zero all gradients
+    model.zero_grad()
+
+    # Backward pass with Guided Backpropagation
+    output[0, target_index].backward()
+
+    # Collect gradients from inputs
+    guided_grads_L = photo_L.grad.data
+    guided_grads_U = photo_U.grad.data
+    guided_grads_xray = xray.grad.data
+
+    return output, guided_grads_L, guided_grads_U, guided_grads_xray
+
+def save_gradient(grad, filepath, is_grayscale=False):
+    """
+    Save the gradient as an image file.
+
+    Parameters:
+    - grad: Tensor, gradient to save.
+    - filepath: str, path to save the image file (include the filename and extension).
+    - is_grayscale: bool, whether to save the image in grayscale or RGB.
+
+    Returns:
+    - None
+    """
+    # Process gradient: remove batch dimension, take absolute value, normalize
+    grad = grad.squeeze(0).cpu().detach()  # Remove batch dimension
+    grad = torch.abs(grad)                 # Take absolute value
+    grad = grad / grad.max()               # Normalize to [0, 1] range
+
+    # Convert to numpy array
+    if is_grayscale:
+        grad = grad.squeeze().numpy()  # Remove channel dimension for grayscale
+        grad_image = (grad * 255).astype('uint8')  # Scale to 0-255
+        image = Image.fromarray(grad_image, mode='L')  # Grayscale image
+    else:
+        grad = grad.permute(1, 2, 0).numpy()  # Convert to (H, W, C) for RGB
+        grad_image = (grad * 255).astype('uint8')  # Scale to 0-255
+        image = Image.fromarray(grad_image, mode='RGB')  # RGB image
+
+    # Save the image
+    image.save(filepath)
+    print(f"Gradient saved as image at {filepath}")
 
 def erase_small(image, THLD, invert=False):
     if invert:
@@ -20,12 +142,6 @@ def erase_small(image, THLD, invert=False):
 
 def distance2D(A, B):
     return ((A[0] - B[0]) ** 2 + (A[1] - B[1]) ** 2) ** 0.5
-
-import numpy as np
-import cv2
-import random
-import matplotlib.pyplot as plt
-
 
 def calculate_hitmap_points(image_hitmap, final_centroids, dist_transform):
     """
@@ -87,8 +203,6 @@ def gen_circles(image, hitmap):
 
     # Step 1: Convert the image from BGR to HSV
     hsv_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-
-    cv2.imwrite('hsv1.jpg', image)
 
     # Step 3: Create a mask using the HSV range
     h, s, v = cv2.split(hsv_image)
@@ -246,7 +360,6 @@ def gen_circles(image, hitmap):
     for h in range(len(final_centroids)):
         x, y = int(final_centroids[h][0]), int(final_centroids[h][1])
         radius = int(radii[h])
-        print(x, y, radius)
         cv2.circle(mask, (x, y), radius, 1, -1)  # Draw filled circles with value 1
 
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask)
@@ -286,16 +399,3 @@ def gen_circles(image, hitmap):
         cv2.circle(image_original, (x, y), radius, (0, 255, 0), 2)  # Green circle with 2-pixel thickness
     
     return image_original
-
-
-
-
-# example usage
-image = cv2.imread('path/to/photo.jpg')
-hitmap = cv2.imread('path/to/corresponding/hitmap.jpg')
-
-image_with_circles = gen_circles(image, hitmap)
-
-cv2.imshow("Image with XAI", image_with_circles.astype(np.uint8))
-cv2.waitKey(0)
-cv2.destroyAllWindows()
