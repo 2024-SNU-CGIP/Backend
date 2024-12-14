@@ -76,7 +76,6 @@ def predict_task(photo_L_path, photo_U_path, xray_path, task_id, db: Session):
         # Save the gradients as images
         save_gradient(guided_grads_L, f"predict_images/{task_id}_grad_L.jpg")
         save_gradient(guided_grads_U, f"predict_images/{task_id}_grad_U.jpg")
-        #save_gradient(guided_grads_xray, f"predict_images/{task_id}_grad_xray.jpg", is_grayscale=True)
 
         # Generate and save the XAI visualization for each image
         hitmap_L = cv2.imread(f"predict_images/{task_id}_grad_L.jpg", cv2.IMREAD_COLOR)
@@ -86,10 +85,6 @@ def predict_task(photo_L_path, photo_U_path, xray_path, task_id, db: Session):
         hitmap_U = cv2.imread(f"predict_images/{task_id}_grad_U.jpg", cv2.IMREAD_COLOR)
         image_with_circles_U = gen_circles(cv2.imread(photo_U_path), hitmap_U)
         cv2.imwrite(f"predict_images/{task_id}_xai_result_U.jpg", image_with_circles_U)
-
-        #hitmap_xray = cv2.imread(f"predict_images/{task_id}_grad_xray.jpg", cv2.IMREAD_GRAYSCALE)
-        #image_with_circles_xray = gen_circles(cv2.imread(xray_path), hitmap_xray)
-        #cv2.imwrite(f"predict_images/{task_id}_xai_result_xray.jpg", image_with_circles_xray)
 
         db.query(Predict).filter(Predict.id == task_id).update({"status": "completed", "result": str(output.item())})
         db.commit()
@@ -154,8 +149,9 @@ async def get_predict_result(task_id: str, db: Session = Depends(get_db)):
                 image_data["xai_result_L"] = base64.b64encode(xai_result_L_file.read()).decode('utf-8')
             with open(f"predict_images/{task_id}_xai_result_U.jpg", "rb") as xai_result_U_file:
                 image_data["xai_result_U"] = base64.b64encode(xai_result_U_file.read()).decode('utf-8')
-            #with open(f"predict_images/{task_id}_xai_result_xray.jpg", "rb") as xai_result_xray_file:
-                #image_data["xai_result_xray"] = base64.b64encode(xai_result_xray_file.read()).decode('utf-8')
+            image_metadata = db.query(ImageMetadata).filter(ImageMetadata.patient_id == result.id).first()
+            with open(image_metadata.xray_path, "rb") as xray_file:
+                image_data["xray"] = base64.b64encode(xray_file.read()).decode('utf-8')
         return JSONResponse(content={"status": result.status, "result": result.result, "images": image_data})
     else:
         raise HTTPException(status_code=404, detail="Task not found")
