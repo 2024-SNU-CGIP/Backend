@@ -8,7 +8,7 @@ from PIL import Image
 from io import BytesIO
 import base64
 import cv2
-from database import get_db, Predict, ImageMetadata
+from database import get_db, Predict, ImageMetadata, PredictImageMetadata
 from visualizeXAI import guided_backpropagation, save_gradient, gen_circles
 from model import model, photo_transform, xray_transform, device
 
@@ -80,6 +80,8 @@ async def predict(
         task_id = str(uuid4())
         db.add(Predict(id=task_id, status="queued", timestamp=str(datetime.now().timestamp()), name=name, birthdate=birthdate, result=None))
         db.commit()
+        db.add(PredictImageMetadata(predict_id=task_id, photo_L_path=photo_L_path, photo_U_path=photo_U_path, xray_path=xray_path))
+        db.commit()
         background_tasks.add_task(predict_task, photo_L_path, photo_U_path, xray_path, task_id, db)
         return JSONResponse(content={"message": "Prediction started", "task_id": task_id})
     except Exception as e:
@@ -90,8 +92,8 @@ async def get_predict_result(task_id: str, db: Session = Depends(get_db)):
     result = db.query(Predict).filter(Predict.id == task_id).first()
     if result:
         image_data = {}
+        image_metadata = db.query(PredictImageMetadata).filter(PredictImageMetadata.predict_id == task_id).first()
         if result.status == "queued":
-            image_metadata = db.query(ImageMetadata).filter(ImageMetadata.patient_id == result.id).first()
             if image_metadata:
                 if image_metadata.photo_L_path:
                     with open(image_metadata.photo_L_path, "rb") as photo_L_file:
@@ -107,7 +109,6 @@ async def get_predict_result(task_id: str, db: Session = Depends(get_db)):
                 image_data["photo_L"] = base64.b64encode(xai_result_L_file.read()).decode('utf-8')
             with open(f"predict_images/{task_id}_xai_result_U.jpg", "rb") as xai_result_U_file:
                 image_data["photo_U"] = base64.b64encode(xai_result_U_file.read()).decode('utf-8')
-            image_metadata = db.query(ImageMetadata).filter(ImageMetadata.patient_id == result.id).first()
             with open(image_metadata.xray_path, "rb") as xray_file:
                 image_data["xray"] = base64.b64encode(xray_file.read()).decode('utf-8')
         return JSONResponse(content={"status": result.status, "result": result.result, "images": image_data})
