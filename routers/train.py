@@ -113,13 +113,14 @@ async def get_all_train_results(page: int = Query(1, ge=1), page_size: int = Que
         tasks = db.query(Train).offset(offset).limit(page_size).all()
         total_tasks = db.query(Train).count()
         max_page = (total_tasks + page_size - 1) // page_size
-        results = {
-            task.id: {
-                "status": task.status,
-                "test_accuracy": task.test_accuracy,
-                "training_time": task.training_time
+        results = [
+            {
+            "id": task.id,
+            "status": task.status,
+            "test_accuracy": task.test_accuracy,
+            "training_time": task.training_time
             } for task in tasks
-        }
+        ]
         return {
             "page": page,
             "page_size": page_size,
