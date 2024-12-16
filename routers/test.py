@@ -16,8 +16,9 @@ async def add_dummy_train_data(db: Session = Depends(get_db)):
             db.add(Train(
                 id=task_id,
                 status="completed",
-                result=str({"test_accuracy": 0.8 + i * 0.02, "training_time": 3600 + i * 100}),
-                timestamp=str(datetime.now().timestamp())
+                test_accuracy=0.8 + i * 0.02,  # 수정
+                training_time=3600 + i * 100,  # 수정
+                timestamp=str(datetime.now().timestamp())  # 수정
             ))
             db.commit()
 
@@ -35,7 +36,7 @@ async def add_dummy_predict_data(db: Session = Depends(get_db)):
                 id=task_id,
                 status="completed",
                 result=str(i%2),
-                timestamp=str(datetime.now().timestamp()),
+                timestamp=datetime.now().timestamp(),
                 name=f"Dummy Patient {i}",
                 birthdate="2000-01-01"
             ))

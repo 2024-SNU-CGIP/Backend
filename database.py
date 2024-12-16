@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Text
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Text, Float
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.ext.declarative import declarative_base
 from pathlib import Path
@@ -46,6 +46,8 @@ class Train(Base):
     status = Column(String, index=True)
     result = Column(Text, nullable=True)
     timestamp = Column(String, index=True)
+    test_accuracy = Column(Float, nullable=True)
+    training_time = Column(Float, nullable=True)
 
 class PredictImageMetadata(Base):
     __tablename__ = "predict_image_metadata"

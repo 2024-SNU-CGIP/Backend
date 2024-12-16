@@ -73,16 +73,23 @@ def train_model_task(db: Session, task_id: str):
         # evaluate the model
         test_accuracy = evaluate_model(model, test_loader, criterion, device)
 
-        db.query(Train).filter(Train.id == task_id).update({"status": "completed", "result": str({"test_accuracy": test_accuracy, "training_time": training_time})})
+        db.query(Train).filter(Train.id == task_id).update({
+            "status": "completed",
+            "test_accuracy": test_accuracy,
+            "training_time": training_time
+        })
         db.commit()
     except Exception as e:
-        db.query(Train).filter(Train.id == task_id).update({"status": "failed", "result": str(e)})
+        db.query(Train).filter(Train.id == task_id).update({
+            "status": "failed",
+            "result": str(e)
+        })
         db.commit()
 
 @router.get("/train")
 async def train_model(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     task_id = str(uuid4())  # 변경: task_id를 str로 변경
-    db.add(Train(id=task_id, status="queued", timestamp=str(datetime.now().timestamp()), result=None))
+    db.add(Train(id=task_id, status="queued", timestamp=str(datetime.now().timestamp())))
     db.commit()
     background_tasks.add_task(train_model_task, db, task_id)
     return JSONResponse(content={"message": "Training started", "task_id": task_id})
@@ -91,9 +98,13 @@ async def train_model(background_tasks: BackgroundTasks, db: Session = Depends(g
 async def get_train_result(task_id: str, db: Session = Depends(get_db)):
     result = db.query(Train).filter(Train.id == task_id).first()
     if result:
-        return JSONResponse(content={"status": result.status, "result": result.result})
+        return JSONResponse(content={
+            "status": result.status,
+            "test_accuracy": result.test_accuracy,
+            "training_time": result.training_time
+        })
     else:
-        raise HTTPException(status_code=404, detail="Task not found")
+        return JSONResponse(content={"message": "Task not found"}, status_code=404)
 
 @router.get("/train_results")
 async def get_all_train_results(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1), db: Session = Depends(get_db)):
@@ -102,7 +113,13 @@ async def get_all_train_results(page: int = Query(1, ge=1), page_size: int = Que
         tasks = db.query(Train).offset(offset).limit(page_size).all()
         total_tasks = db.query(Train).count()
         max_page = (total_tasks + page_size - 1) // page_size
-        results = {task.id: {"status": task.status, "result": task.result} for task in tasks}
+        results = {
+            task.id: {
+                "status": task.status,
+                "test_accuracy": task.test_accuracy,
+                "training_time": task.training_time
+            } for task in tasks
+        }
         return {
             "page": page,
             "page_size": page_size,

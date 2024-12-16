@@ -121,7 +121,14 @@ async def get_all_predict_results(page: int = Query(1, ge=1), page_size: int = Q
         tasks = db.query(Predict).offset(offset).limit(page_size).all()
         total_tasks = db.query(Predict).count()
         max_page = (total_tasks + page_size - 1) // page_size
-        results = {task.id: {"status": task.status, "result": task.result} for task in tasks}
+        results = {
+            task.id: {
+                "status": task.status,
+                "result": task.result,
+                "name": task.name,
+                "birthdate": task.birthdate
+            } for task in tasks
+        }
         return {
             "page": page,
             "page_size": page_size,
