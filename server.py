@@ -20,6 +20,7 @@ from uuid import uuid4
 import os
 from visualizeXAI import FusionModelMobileNetV2_XAI, guided_backpropagation, save_gradient, gen_circles
 import cv2
+from fastapi import APIRouter
 
 app = FastAPI()
 
@@ -401,6 +402,48 @@ async def get_stats(db: Session = Depends(get_db)):
         })
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
+
+test_router = APIRouter()
+
+@test_router.post("/add_dummy_train_data")
+async def add_dummy_train_data(db: Session = Depends(get_db)):
+    try:
+        # Add dummy train tasks
+        for i in range(5):
+            task_id = str(uuid4())
+            db.add(Train(
+                id=task_id,
+                status="completed",
+                result=str({"test_accuracy": 0.8 + i * 0.02, "training_time": 3600 + i * 100}),
+                timestamp=str(datetime.now().timestamp())
+            ))
+            db.commit()
+
+        return JSONResponse(content={"message": "Dummy train data added successfully"})
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@test_router.post("/add_dummy_predict_data")
+async def add_dummy_predict_data(db: Session = Depends(get_db)):
+    try:
+        # Add dummy predict tasks
+        for i in range(5):
+            task_id = str(uuid4())
+            db.add(Predict(
+                id=task_id,
+                status="completed",
+                result=str(0.5 + i * 0.1),
+                timestamp=str(datetime.now().timestamp()),
+                name=f"Dummy Patient {i}",
+                birthdate="2000-01-01"
+            ))
+            db.commit()
+
+        return JSONResponse(content={"message": "Dummy predict data added successfully"})
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+app.include_router(test_router, prefix="/test")
 
 if __name__ == "__main__":
     import uvicorn
