@@ -104,9 +104,9 @@ async def get_predict_result(task_id: str, db: Session = Depends(get_db)):
                         image_data["xray"] = base64.b64encode(xray_file.read()).decode('utf-8')
         elif result.status == "completed":
             with open(f"predict_images/{task_id}_xai_result_L.jpg", "rb") as xai_result_L_file:
-                image_data["xai_result_L"] = base64.b64encode(xai_result_L_file.read()).decode('utf-8')
+                image_data["photo_L"] = base64.b64encode(xai_result_L_file.read()).decode('utf-8')
             with open(f"predict_images/{task_id}_xai_result_U.jpg", "rb") as xai_result_U_file:
-                image_data["xai_result_U"] = base64.b64encode(xai_result_U_file.read()).decode('utf-8')
+                image_data["photo_U"] = base64.b64encode(xai_result_U_file.read()).decode('utf-8')
             image_metadata = db.query(ImageMetadata).filter(ImageMetadata.patient_id == result.id).first()
             with open(image_metadata.xray_path, "rb") as xray_file:
                 image_data["xray"] = base64.b64encode(xray_file.read()).decode('utf-8')
@@ -118,7 +118,7 @@ async def get_predict_result(task_id: str, db: Session = Depends(get_db)):
 async def get_all_predict_results(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1), db: Session = Depends(get_db)):
     try:
         offset = (page - 1) * page_size
-        tasks = db.query(Predict).offset(offset).limit(page_size).all()
+        tasks = db.query(Predict).order_by(Predict.timestamp.desc()).offset(offset).limit(page_size).all()
         total_tasks = db.query(Predict).count()
         max_page = (total_tasks + page_size - 1) // page_size
         results = [

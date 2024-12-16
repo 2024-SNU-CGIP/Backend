@@ -110,7 +110,7 @@ async def get_train_result(task_id: str, db: Session = Depends(get_db)):
 async def get_all_train_results(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1), db: Session = Depends(get_db)):
     try:
         offset = (page - 1) * page_size
-        tasks = db.query(Train).offset(offset).limit(page_size).all()
+        tasks = db.query(Train).order_by(Train.timestamp.desc()).offset(offset).limit(page_size).all()
         total_tasks = db.query(Train).count()
         max_page = (total_tasks + page_size - 1) // page_size
         results = [
