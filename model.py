@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torchvision.models as models
+from torchvision import transforms
+from visualizeXAI import FusionModelMobileNetV2_XAI
 
 class FusionModelMobileNetV2(nn.Module):
     def __init__(self, num_classes=1):
@@ -48,16 +50,22 @@ class FusionModelMobileNetV2(nn.Module):
 
         return output
 
-# Example usage
-if __name__ == "__main__":
-    # Instantiate the model
-    model = FusionModelMobileNetV2(num_classes=1)
+model = FusionModelMobileNetV2(num_classes=1)
 
-    # Example input (dummy data)
-    photo_L_input = torch.randn(1, 3, 224, 224)  # Batch size of 1, 3 channels (RGB), 224x224 image
-    photo_U_input = torch.randn(1, 3, 224, 224)
-    xray_input = torch.randn(1, 1, 224, 224)   # Batch size of 1, 1 channel (grayscale), 224x224 image
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = FusionModelMobileNetV2_XAI()
+model.load_state_dict(torch.load('model_weights.pth', map_location=device))
+model = model.to(device)
+model.eval()
 
-    # Forward pass
-    output = model(photo_L_input, photo_U_input, xray_input)
-    print(output)
+photo_transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+xray_transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.5], std=[0.5])
+])
