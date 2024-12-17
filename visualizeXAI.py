@@ -195,8 +195,8 @@ def gen_circles(image, hitmap):
     hitmap = cv2.cvtColor(hitmap, cv2.COLOR_BGR2GRAY)
 
     # Step 3: Crop the image using slicing
-    image = image[y1:y2, x1:x2]
     image_original = image
+    image.resize(h, w, 3)
 
     # Convert the image to float32 for precision in calculations (optional but recommended)
     image = np.float32(image)
