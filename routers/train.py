@@ -68,7 +68,7 @@ def train_model_task(db: Session, task_id: str):
             default=0
         )
 
-        old_weights = torch.load('model_weights.pth')
+        old_weights = torch.load('model_weights.pth', map_location=device)
 
         # Train the model
         train(model, train_loader, val_loader, criterion, optimizer, device, num_epochs=50, patience=5)
@@ -111,6 +111,7 @@ async def get_train_result(task_id: str, db: Session = Depends(get_db)):
     if result:
         return JSONResponse(content={
             "status": result.status,
+            "result": result.result,
             "test_accuracy": result.test_accuracy,
             "training_time": result.training_time
         })
