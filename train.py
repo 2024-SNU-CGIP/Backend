@@ -19,7 +19,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, device, num_epo
 
             running_loss += loss.item()
 
-        val_loss = evaluate_model(model, val_loader, criterion, device)
+        val_loss = validate_model(model, val_loader, criterion, device)
 
         if val_loss < best_loss:
             best_loss = val_loss
@@ -33,6 +33,15 @@ def train(model, train_loader, val_loader, criterion, optimizer, device, num_epo
             break
 
     model.load_state_dict(torch.load('model_weights.pth'))
+
+def validate_model(model, data_loader, criterion, device):
+    model.eval()
+    val_loss = 0
+    for photos_L, photos_U, xrays, labels in data_loader:
+        photos_L, photos_U, xrays, labels = photos_L.to(device), photos_U.to(device), xrays.to(device), labels.to(device)
+        outputs = model(photos_L, photos_U, xrays).squeeze()
+        val_loss += criterion(outputs, labels).item()
+    return val_loss / len(data_loader)
 
 def evaluate_model(model, data_loader, device):
     model.eval()
