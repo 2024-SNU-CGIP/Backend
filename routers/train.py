@@ -63,6 +63,13 @@ def train_model_task(db: Session, task_id: str):
         # 학습 시작 시간 기록
         start_time = datetime.now()
 
+        highest_accuracy = max(
+            (result.test_accuracy for result in db.query(Train).all() if result.test_accuracy is not None),
+            default=0
+        )
+
+        old_weights = torch.load('model_weights.pth')
+
         # Train the model
         train(model, train_loader, val_loader, criterion, optimizer, device, num_epochs=50, patience=5)
 
@@ -72,6 +79,9 @@ def train_model_task(db: Session, task_id: str):
 
         # evaluate the model
         test_accuracy = evaluate_model(model, test_loader, criterion, device)
+
+        if test_accuracy < highest_accuracy:
+            torch.save(old_weights, 'model_weights.pth')
 
         db.query(Train).filter(Train.id == task_id).update({
             "status": "completed",
