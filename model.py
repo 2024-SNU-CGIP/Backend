@@ -53,6 +53,7 @@ class FusionModelMobileNetV2(nn.Module):
 model = FusionModelMobileNetV2(num_classes=1)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#device = torch.device("mps")
 model = FusionModelMobileNetV2_XAI()
 model.load_state_dict(torch.load('model_weights.pth', map_location=device))
 model = model.to(device)
