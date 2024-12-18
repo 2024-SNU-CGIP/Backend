@@ -78,7 +78,7 @@ def train_model_task(db: Session, task_id: str):
         training_time = (end_time - start_time).total_seconds()
 
         # evaluate the model
-        test_accuracy = evaluate_model(model, test_loader, criterion, device)
+        test_accuracy = evaluate_model(model, test_loader, device)
 
         if test_accuracy < highest_accuracy:
             torch.save(old_weights, 'model_weights.pth')
