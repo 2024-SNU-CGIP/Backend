@@ -82,6 +82,7 @@ def train_model_task(db: Session, task_id: str):
 
         if test_accuracy < highest_accuracy:
             torch.save(old_weights, 'model_weights.pth')
+            model.load_state_dict(old_weights)
 
         db.query(Train).filter(Train.id == task_id).update({
             "status": "completed",
