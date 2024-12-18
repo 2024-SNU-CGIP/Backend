@@ -18,6 +18,8 @@ def train(model, train_loader, val_loader, criterion, optimizer, device, num_epo
             optimizer.step()
 
             running_loss += loss.item()
+        
+        print(f'Epoch {epoch + 1}, Loss: {running_loss / len(train_loader)}')
 
         val_loss = validate_model(model, val_loader, criterion, device)
 
